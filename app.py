@@ -1,64 +1,133 @@
 import streamlit as st
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib import colors
+from reportlab.lib.units import inch
 
-st.set_page_config(page_title="GRIDHUB SMR Simulation", layout="wide")
+st.set_page_config(page_title="SMR Energy Policy Simulator", layout="wide")
 
-st.title("GRIDHUB: SMR Energy Network Simulation")
-st.markdown("Interactive Grid Stability & Electrification Model")
+st.title("⚡ SMR Energy Transition Simulation Platform")
+st.markdown("A dynamic modelling tool evaluating EV growth, grid demand, SMR deployment, cost efficiency and carbon impact.")
 
-st.sidebar.header("System Parameters")
+# -----------------------------
+# Sidebar Inputs
+# -----------------------------
+st.sidebar.header("Model Inputs")
 
-base_demand_avg = st.sidebar.slider("Base Average Demand (MW)", 400, 800, 500)
-peak_variation = st.sidebar.slider("Daily Demand Variation (MW)", 100, 300, 200)
-ev_peak_load = st.sidebar.slider("EV Evening Charging Peak (MW)", 0, 300, 120)
-renewable_capacity = st.sidebar.slider("Installed Renewable Capacity (MW)", 100, 600, 300)
-smr_capacity = st.sidebar.slider("SMR Baseload Capacity (MW)", 0, 600, 300)
-demand_growth_percent = st.sidebar.slider("Future Demand Growth (%)", 0, 50, 20)
+years = st.sidebar.slider("Simulation Years", 5, 30, 20)
+base_demand = st.sidebar.number_input("Current Grid Demand (TWh)", 100, 1000, 300)
+ev_growth = st.sidebar.slider("Annual EV Growth Rate (%)", 1, 30, 10)
 
-hours = np.arange(0, 24)
+num_smrs = st.sidebar.slider("Number of SMRs Installed", 1, 20, 5)
+smr_output = st.sidebar.number_input("Output per SMR (TWh/year)", 10, 200, 50)
 
-base_demand = base_demand_avg + peak_variation * np.sin((hours - 7) / 24 * 2 * np.pi)
+cost_smr = st.sidebar.number_input("SMR Cost (£/MWh)", 40, 200, 90)
+cost_gas = st.sidebar.number_input("Gas Cost (£/MWh)", 40, 200, 120)
 
-ev_load = np.zeros(24)
-ev_load[18:22] = ev_peak_load
+carbon_smr = st.sidebar.number_input("SMR Carbon (gCO2/kWh)", 0, 50, 12)
+carbon_gas = st.sidebar.number_input("Gas Carbon (gCO2/kWh)", 300, 600, 450)
 
-total_demand = (base_demand + ev_load) * (1 + demand_growth_percent / 100)
+sensitivity = st.sidebar.checkbox("Apply +20% Demand Shock")
 
-np.random.seed(1)
-renewables = renewable_capacity * (
-    0.6 + 0.3 * np.sin(hours / 24 * 2 * np.pi)
-) + np.random.normal(0, renewable_capacity * 0.05, 24)
+# -----------------------------
+# Model Calculations
+# -----------------------------
+years_array = np.arange(years)
 
-renewables = np.clip(renewables, 0, None)
+base_projection = base_demand * (1 + ev_growth/100) ** years_array
+shock_projection = base_projection * 1.2
 
-smr_output = np.full(24, smr_capacity)
+if sensitivity:
+    demand = shock_projection
+else:
+    demand = base_projection
 
-total_supply = renewables + smr_output
+total_smr_supply = num_smrs * smr_output
+smr_supply = np.full(years, total_smr_supply)
 
-shortfall = total_demand - total_supply
-backup_required = np.where(shortfall > 0, shortfall, 0)
+supply_gap = smr_supply - demand
 
-col1, col2, col3 = st.columns(3)
+# Cost modelling
+annual_cost_smr = demand * 1_000_000 * cost_smr / 1_000_000
+annual_cost_gas = demand * 1_000_000 * cost_gas / 1_000_000
 
-col1.metric("Peak Demand (MW)", int(np.max(total_demand)))
-col2.metric("Peak Backup Required (MW)", int(np.max(backup_required)))
-col3.metric("Total Daily Backup Energy (MWh)", int(np.sum(backup_required)))
+# Carbon modelling
+carbon_smr_total = demand * carbon_smr
+carbon_gas_total = demand * carbon_gas
 
-fig1, ax1 = plt.subplots()
-ax1.plot(hours, total_demand, label="Demand")
-ax1.plot(hours, total_supply, label="Supply (Renewables + SMR)")
-ax1.set_xlabel("Hour of Day")
-ax1.set_ylabel("Power (MW)")
-ax1.set_title("Grid Balance Over 24 Hours")
-ax1.legend()
+# -----------------------------
+# Dashboard Layout
+# -----------------------------
+col1, col2 = st.columns(2)
 
-st.pyplot(fig1)
+with col1:
+    st.subheader("📈 Demand vs SMR Supply")
+    fig1, ax1 = plt.subplots()
+    ax1.plot(years_array, base_projection)
+    ax1.plot(years_array, shock_projection)
+    ax1.plot(years_array, smr_supply)
+    ax1.legend(["Base Demand", "Demand +20%", "SMR Supply"])
+    ax1.set_xlabel("Year")
+    ax1.set_ylabel("Energy (TWh)")
+    st.pyplot(fig1)
 
-fig2, ax2 = plt.subplots()
-ax2.bar(hours, backup_required)
-ax2.set_xlabel("Hour of Day")
-ax2.set_ylabel("Backup Required (MW)")
-ax2.set_title("Fossil Backup Required")
+with col2:
+    st.subheader("🌍 Carbon Emissions Comparison")
+    fig2, ax2 = plt.subplots()
+    ax2.plot(years_array, carbon_smr_total)
+    ax2.plot(years_array, carbon_gas_total)
+    ax2.legend(["SMR Emissions", "Gas Emissions"])
+    ax2.set_xlabel("Year")
+    ax2.set_ylabel("Carbon (Relative Index)")
+    st.pyplot(fig2)
 
-st.pyplot(fig2)
+st.subheader("💷 Annual System Cost Comparison")
+fig3, ax3 = plt.subplots()
+ax3.plot(years_array, annual_cost_smr)
+ax3.plot(years_array, annual_cost_gas)
+ax3.legend(["SMR Cost", "Gas Cost"])
+ax3.set_xlabel("Year")
+ax3.set_ylabel("Cost (£ Millions Approx.)")
+st.pyplot(fig3)
+
+# -----------------------------
+# Policy Summary
+# -----------------------------
+st.subheader("📜 Policy Insight Summary")
+
+if supply_gap[-1] >= 0:
+    supply_message = "SMR deployment is sufficient to meet projected EV demand."
+else:
+    supply_message = "SMR deployment is insufficient under this scenario."
+
+carbon_savings = carbon_gas_total[-1] - carbon_smr_total[-1]
+
+st.write(f"""
+• {supply_message}  
+• Estimated long-term carbon savings vs gas: {int(carbon_savings):,} (relative index units)  
+• SMRs provide cost stability compared to volatile gas pricing.  
+• Increased EV adoption significantly increases grid stress without firm low-carbon baseload.
+""")
+
+# -----------------------------
+# PDF Export
+# -----------------------------
+def generate_pdf():
+    doc = SimpleDocTemplate("SMR_Report.pdf")
+    elements = []
+    styles = getSampleStyleSheet()
+
+    elements.append(Paragraph("SMR Energy Transition Simulation Report", styles["Title"]))
+    elements.append(Spacer(1, 0.3 * inch))
+    elements.append(Paragraph(supply_message, styles["Normal"]))
+    elements.append(Paragraph(f"Carbon savings vs gas: {int(carbon_savings)}", styles["Normal"]))
+
+    doc.build(elements)
+
+generate_pdf()
+
+with open("SMR_Report.pdf", "rb") as file:
+    st.download_button("📥 Download Policy Report (PDF)", file, "SMR_Report.pdf")
